@@ -511,7 +511,7 @@ class Rgthree extends EventTarget {
             clean && clean.apply(app, [...arguments]);
         };
         const loadGraphData = app.loadGraphData;
-        app.loadGraphData = function (graph) {
+        app.loadGraphData = async function (graph) {
             if (rgthree.monitorLinkTimeout) {
                 clearTimeout(rgthree.monitorLinkTimeout);
                 rgthree.monitorLinkTimeout = null;
@@ -584,7 +584,7 @@ class Rgthree extends EventTarget {
                     }, 5000);
                 }
             }, 100);
-            return loadGraphData && loadGraphData.apply(app, [...arguments]);
+            return loadGraphData && await loadGraphData.apply(app, [...arguments]);
         };
     }
     getNodeFromInitialGraphToPromptSerializedWorkflowBecauseComfyUIBrokeStuff(node) {
