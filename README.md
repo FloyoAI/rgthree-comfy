@@ -213,6 +213,7 @@ Note, you can right-click on a bunch of the rgthree-comfy nodes and select `🛟
 >    -  `matchColors` - Only add groups that match the provided colors. Can be ComfyUI colors (red, pale_blue) or hex codes (#a4d399). Multiple can be added, comma delimited.
 >    -  `matchTitle` - Filter the list of toggles by title match (string match, or regular expression).
 >    -  `showNav` - Add / remove a quick navigation arrow to take you to the group. (default: true)
+>    -  `showAllGraphs` - Show groups from all [sub]graphs in the workflow. (default: true)
 >    -  `sort` - Sort the toggles' order by "alphanumeric", graph "position", or "custom alphabet". (default: "position")
 >    -  `customSortAlphabet` - When the sort property is "custom alphabet" you can define the alphabet to use here, which will match the beginning of each group name and sort against it. If group titles do not match any custom alphabet entry, then they will be put after groups that do, ordered alphanumerically.
 >
@@ -309,11 +310,12 @@ Note, you can right-click on a bunch of the rgthree-comfy nodes and select `🛟
 >    <summary>ℹ️ <i>More Information</i></summary>
 >
 >    - The text shown is the "Title" of the node and you can adjust the the font size, font family,
->      font color, text alignment as well as a background color, padding, and background border
->      radius from the node's properties. You can double-click the node to open the properties
->      panel.
->    - **Pro Tip #1:** You can add multiline text from the properties panel _(because ComfyUI let's
->      you shift + enter there, only)._
+>      font color, text alignment as well as a background color, padding, background border
+>      radius, and angle (in degrees) from the node's properties. You can double-click the node to
+>      open the properties panel.
+>    - The Title also supports the literal sequence "\\n" to insert a newline when drawing the label.
+>    - ~**Pro Tip #1:** You can add multiline text from the properties panel _(because ComfyUI let's
+>      you shift + enter there, only)._~
 >    - **Pro Tip #2:** You can use ComfyUI's native "pin" option in the right-click menu to make the
 >      label stick to the workflow and clicks to "go through". You can right-click at any time to
 >      unpin.

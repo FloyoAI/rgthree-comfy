@@ -1,9 +1,13 @@
-import type {IContextMenuValue, LGraphCanvas as TLGraphCanvas, LGraphNodeConstructor} from "@comfyorg/litegraph";
+import type {
+  IContextMenuValue,
+  LGraphCanvas as TLGraphCanvas,
+  LGraphNode,
+} from "@comfyorg/frontend";
 import type {ComfyNodeDef} from "typings/comfy.js";
 
 import {app} from "scripts/app.js";
 import {rgthree} from "./rgthree.js";
-import {getOutputNodes} from "./utils.js";
+import {getGroupNodes, getOutputNodes} from "./utils.js";
 import {SERVICE as CONFIG_SERVICE} from "./services/config_service.js";
 
 function showQueueNodesMenuIfOutputNodesAreSelected(
@@ -17,7 +21,7 @@ function showQueueNodesMenuIfOutputNodesAreSelected(
     content: `Queue Selected Output Nodes (rgthree) &nbsp;`,
     className: "rgthree-contextmenu-item",
     callback: () => {
-      rgthree.queueOutputNodes(outputNodes.map((n) => n.id));
+      rgthree.queueOutputNodes(outputNodes);
     },
     disabled: !outputNodes.length,
   };
@@ -36,17 +40,17 @@ function showQueueGroupNodesMenuIfGroupIsSelected(
   }
   const group =
     rgthree.lastCanvasMouseEvent &&
-    app.graph.getGroupOnPos(
+    (app.canvas.getCurrentGraph() || app.graph).getGroupOnPos(
       rgthree.lastCanvasMouseEvent.canvasX,
       rgthree.lastCanvasMouseEvent.canvasY,
     );
 
-  const outputNodes = group && getOutputNodes(group._nodes);
+  const outputNodes: LGraphNode[] | null = (group && getOutputNodes(getGroupNodes(group))) || null;
   const menuItem = {
     content: `Queue Group Output Nodes (rgthree) &nbsp;`,
     className: "rgthree-contextmenu-item",
     callback: () => {
-      outputNodes && rgthree.queueOutputNodes(outputNodes.map((n) => n.id));
+      outputNodes && rgthree.queueOutputNodes(outputNodes);
     },
     disabled: !outputNodes?.length,
   };
@@ -64,7 +68,7 @@ function showQueueGroupNodesMenuIfGroupIsSelected(
  */
 app.registerExtension({
   name: "rgthree.QueueNode",
-  async beforeRegisterNodeDef(nodeType: LGraphNodeConstructor, nodeData: ComfyNodeDef) {
+  async beforeRegisterNodeDef(nodeType: typeof LGraphNode, nodeData: ComfyNodeDef) {
     const getExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
     nodeType.prototype.getExtraMenuOptions = function (
       canvas: TLGraphCanvas,

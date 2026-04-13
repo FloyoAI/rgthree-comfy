@@ -15,6 +15,8 @@ import re
 import time
 import operator as op
 import datetime
+import numpy as np
+import hashlib
 
 from typing import Any, Callable, Iterable, Optional, Union
 from types import MappingProxyType
@@ -24,6 +26,23 @@ from .utils import ByPassTypeTuple, FlexibleOptionalInputType, any_type, get_dic
 from .log import log_node_error, log_node_warn, log_node_info
 
 from .power_lora_loader import RgthreePowerLoraLoader
+
+from nodes import ImageBatch
+from comfy_extras.nodes_latent import LatentBatch
+
+
+class LoopBreak(Exception):
+  """A special error type that is caught in a loop for correct breaking behavior."""
+
+  def __init__(self):
+    super().__init__('Cannot use "break" outside of a loop.')
+
+
+class LoopContinue(Exception):
+  """A special error type that is caught in a loop for correct continue behavior."""
+
+  def __init__(self):
+    super().__init__('Cannot use "continue" outside of a loop.')
 
 
 @dataclasses.dataclass(frozen=True)  # Note, kw_only=True is only python 3.10+
@@ -55,20 +74,45 @@ def purge_vram(purge_models=True):
     comfy.model_management.soft_empty_cache()
 
 
+def batch(*args):
+  """Batches multiple image or latents together."""
+
+  def check_is_latent(item) -> bool:
+    return isinstance(item, dict) and 'samples' in item
+
+  args = list(args)
+  result = args.pop(0)
+  is_latent = check_is_latent(result)
+  node = LatentBatch() if is_latent else ImageBatch()
+
+  for arg in args:
+    if is_latent != check_is_latent(arg):
+      raise ValueError(
+        f'batch() error: Expecting "{"LATENT" if is_latent else "IMAGE"}"'
+        f' but got "{"IMAGE" if is_latent else "LATENT"}".'
+      )
+    result = node.batch(result, arg)[0]
+  return result
+
+
 _BUILTIN_FN_PREFIX = '__rgthreefn.'
 
 
-def _get_built_in_fn_key(fn: Function):
+def _get_built_in_fn_key(fn: Function) -> str:
   """Returns a key for a built-in function."""
   return f'{_BUILTIN_FN_PREFIX}{hash(fn.name)}'
 
 
-def _get_built_in_fn_by_key(key: str):
+def _get_built_in_fn_by_key(fn_key: str):
   """Returns the `Function` for the provided key (purposefully, not name)."""
-  if not key.startswith(_BUILTIN_FN_PREFIX) or key not in _BUILT_INS_BY_NAME_AND_KEY:
+  if not fn_key.startswith(_BUILTIN_FN_PREFIX) or fn_key not in _BUILT_INS_BY_NAME_AND_KEY:
     raise ValueError('No built in function found.')
-  return _BUILT_INS_BY_NAME_AND_KEY[key]
+  return _BUILT_INS_BY_NAME_AND_KEY[fn_key]
 
+def sha264(message: str):
+  if isinstance(message, str):
+    return hashlib.sha256(message.encode()).hexdigest()
+  return None
 
 _BUILT_IN_FNS_LIST = [
   Function(name="round", call=round, args=(1, 2)),
@@ -92,13 +136,16 @@ _BUILT_IN_FNS_LIST = [
   Function(name="list", call=list, args=(1, 1)),
   Function(name="tuple", call=tuple, args=(1, 1)),
   # Special
+  Function(name="dir", call=dir, args=(1, 1)),
+  Function(name="type", call=type, args=(1, 1)),
+  Function(name="print", call=print, args=(0, None)),
+  Function(name="sha264", call=sha264, args=(1, 1)),
+  # Comfy Specials
   Function(name="node", call='_get_node', args=(0, 1)),
   Function(name="nodes", call='_get_nodes', args=(0, 1)),
   Function(name="input_node", call='_get_input_node', args=(0, 1)),
   Function(name="purge_vram", call=purge_vram, args=(0, 1)),
-  Function(name="dir", call=dir, args=(1, 1)),
-  Function(name="type", call=type, args=(1, 1)),
-  Function(name="print", call=print, args=(0, None)),
+  Function(name="batch", call=batch, args=(2, None)),
 ]
 
 _BUILT_INS_BY_NAME_AND_KEY = {
@@ -118,6 +165,15 @@ _BUILT_INS = MappingProxyType(
   }
 )
 
+# A dict of types to blocked attributes/methods. Used to disallow file system access or other
+# invocations we may want to block. Necessary for any instance type that is possible to create from
+# the code or standard ComfyUI inputs.
+#
+# For instance, a user does not have access to the numpy module directly, so they cannot invoke
+# `numpy.save`. However, a user can access a numpy.ndarray instance from a tensor and, from there,
+# an attempt to call `tofile` or `dump` etc. would need to be blocked.
+_BLOCKED_METHODS_OR_ATTRS = MappingProxyType({np.ndarray: ['tofile', 'dump']})
+
 # Special functions by class type (called from the Attrs.)
 _SPECIAL_FUNCTIONS = {
   RgthreePowerLoraLoader.NAME: {
@@ -135,23 +191,39 @@ _SPECIAL_FUNCTIONS = {
 _NON_DETERMINISTIC_FUNCTION_CHECKS = [r'(?<!input_)(nodes?)\(',]
 
 _OPERATORS = {
+  # operator
   ast.Add: op.add,
   ast.Sub: op.sub,
   ast.Mult: op.mul,
+  ast.MatMult: op.matmul,
   ast.Div: op.truediv,
-  ast.FloorDiv: op.floordiv,
-  ast.Pow: op.pow,
-  ast.BitXor: op.xor,
-  ast.USub: op.neg,
   ast.Mod: op.mod,
-  ast.BitAnd: op.and_,
-  ast.BitOr: op.or_,
-  ast.Invert: op.invert,
-  ast.And: lambda a, b: 1 if a and b else 0,
-  ast.Or: lambda a, b: 1 if a or b else 0,
-  ast.Not: lambda a: 0 if a else 1,
+  ast.Pow: op.pow,
   ast.RShift: op.rshift,
-  ast.LShift: op.lshift
+  ast.LShift: op.lshift,
+  ast.BitOr: op.or_,
+  ast.BitXor: op.xor,
+  ast.BitAnd: op.and_,
+  ast.FloorDiv: op.floordiv,
+  # boolop
+  ast.And: lambda a, b: a and b,
+  ast.Or: lambda a, b: a or b,
+  # unaryop
+  ast.Invert: op.invert,
+  ast.Not: lambda a: 0 if a else 1,
+  ast.USub: op.neg,
+  # cmpop
+  ast.Eq: op.eq,
+  ast.NotEq: op.ne,
+  ast.Lt: op.lt,
+  ast.LtE: op.le,
+  ast.Gt: op.gt,
+  ast.GtE: op.ge,
+  ast.Is: op.is_,
+  ast.IsNot: op.is_not,
+  ast.In: lambda a, b: a in b,
+  ast.NotIn: lambda a, b: a not in b,
+
 }
 
 _NODE_NAME = get_name("Power Puter")
@@ -201,6 +273,7 @@ class RgthreePowerPuter:
         "unique_id": "UNIQUE_ID",
         "extra_pnginfo": "EXTRA_PNGINFO",
         "prompt": "PROMPT",
+        "dynprompt": "DYNPROMPT"
       },
     }
 
@@ -259,6 +332,7 @@ class RgthreePowerPuter:
     pnginfo = kwargs['extra_pnginfo']
     workflow = pnginfo["workflow"] if "workflow" in pnginfo else {"nodes": []}
     prompt = kwargs['prompt']
+    dynprompt = kwargs['dynprompt']
 
     outputs = get_dict_value(kwargs, 'outputs.outputs', None)
     if not outputs:
@@ -274,7 +348,14 @@ class RgthreePowerPuter:
 
     code = _update_code(kwargs['code'], unique_id=kwargs['unique_id'], log=True)
 
-    eva = _Puter(code=code, ctx=ctx, workflow=workflow, prompt=prompt, unique_id=unique_id)
+    eva = _Puter(
+      code=code,
+      ctx=ctx,
+      workflow=workflow,
+      prompt=prompt,
+      dynprompt=dynprompt,
+      unique_id=unique_id
+    )
     values = eva.execute()
 
     # Check if we have multiple outputs that the returned value is a tuple and raise if not.
@@ -336,16 +417,17 @@ class _Puter:
   See https://www.basicexamples.com/example/python/ast for examples.
   """
 
-  def __init__(self, *, code: str, ctx: dict[str, Any], workflow, prompt, unique_id):
+  def __init__(self, *, code: str, ctx: dict[str, Any], workflow, prompt, dynprompt, unique_id):
     ctx = ctx or {}
     self._ctx = {**ctx}
     self._code = code
     self._workflow = workflow
     self._prompt = prompt
-    self._prompt_nodes = []
-    if self._prompt:
-      self._prompt_nodes = [{'id': id} | {**node} for id, node in self._prompt.items()]
-    self._prompt_node = [n for n in self._prompt_nodes if n['id'] == unique_id][0]
+    self._unique_id = unique_id
+    self._dynprompt = dynprompt
+    # These are now expanded lazily when needed.
+    self._prompt_nodes = None
+    self._prompt_node = None
 
   def execute(self, code=Optional[str]) -> Any:
     """Evaluates a the code block."""
@@ -369,9 +451,26 @@ class _Puter:
     random.setstate(initial_random_state)
     return last_value
 
+  def _get_prompt_nodes(self):
+    """Expands the prompt nodes lazily from the dynamic prompt.
+
+    https://github.com/comfyanonymous/ComfyUI/blob/fc657f471a29d07696ca16b566000e8e555d67d1/comfy_execution/graph.py#L22
+    """
+    if self._prompt_nodes is None:
+      self._prompt_nodes = []
+      if self._dynprompt:
+        all_ids = self._dynprompt.all_node_ids()
+        self._prompt_nodes = [{'id': k} | {**self._dynprompt.get_node(k)} for k in all_ids]
+    return self._prompt_nodes
+
+  def _get_prompt_node(self):
+    if self._prompt_nodes is None:
+      self._prompt_node = [n for n in self._get_prompt_nodes() if n['id'] == self._unique_id][0]
+    return self._prompt_node
+
   def _get_nodes(self, node_id: Union[int, str, re.Pattern, None] = None) -> list[Any]:
     """Get a list of the nodes that match the node_id, or all the nodes in the prompt."""
-    nodes = self._prompt_nodes.copy()
+    nodes = self._get_prompt_nodes().copy()
     if not node_id:
       return nodes
 
@@ -389,7 +488,7 @@ class _Puter:
   def _get_node(self, node_id: Union[int, str, re.Pattern, None] = None) -> Union[Any, None]:
     """Returns a prompt-node from the hidden prompt."""
     if node_id is None:
-      return self._prompt_node
+      return self._get_prompt_node()
     nodes = self._get_nodes(node_id)
     if nodes and len(nodes) > 1:
       log_node_warn(_NODE_NAME, f"More than one node found for '{node_id}'. Returning first.")
@@ -397,10 +496,10 @@ class _Puter:
 
   def _get_input_node(self, input_name, node=None):
     """Gets the (non-muted) node of an input connection from a node (default to the power puter)."""
-    node = node if node else self._prompt_node
+    node = node if node else self._get_prompt_node()
     try:
       connected_node_id = node['inputs'][input_name][0]
-      return [n for n in self._prompt_nodes if n['id'] == connected_node_id][0]
+      return [n for n in self._get_prompt_nodes() if n['id'] == connected_node_id][0]
     except (TypeError, IndexError, KeyError):
       log_node_warn(_NODE_NAME, f'No input node found for "{input_name}". ')
     return None
@@ -427,12 +526,17 @@ class _Puter:
       return _OPERATORS[type(stmt.op)](left, right)
 
     if isinstance(stmt, ast.BoolOp):
-      left = self._eval_statement(stmt.values[0], ctx=ctx)
-      # If we're an AND and already false, then don't even evaluate the right.
-      if isinstance(stmt.op, ast.And) and not left:
-        return left
-      right = self._eval_statement(stmt.values[1], ctx=ctx)
-      return _OPERATORS[type(stmt.op)](left, right)
+      is_and = isinstance(stmt.op, ast.And)
+      is_or = isinstance(stmt.op, ast.Or)
+      stmt_value_eval = None
+      for stmt_value in stmt.values:
+        stmt_value_eval = self._eval_statement(stmt_value, ctx=ctx)
+        # If we're an and operator and have a falsyt value, then we stop and return. Likewise, if
+        # we're an or operator and have a truthy value, we can stop and return.
+        if (is_and and not stmt_value_eval) or (is_or and stmt_value_eval):
+          return stmt_value_eval
+      # Always return the last if we made it here w/o success.
+      return stmt_value_eval
 
     if isinstance(stmt, ast.UnaryOp):
       return _OPERATORS[type(stmt.op)](self._eval_statement(stmt.operand, ctx=ctx))
@@ -448,6 +552,10 @@ class _Puter:
       else:
         # Slice could be a name or a constant; evaluate it
         attr = self._eval_statement(stmt.slice, ctx=ctx)
+      # Check if we're blocking access to this attribute/method on this item type.
+      for typ, names in _BLOCKED_METHODS_OR_ATTRS.items():
+        if isinstance(item, typ) and isinstance(attr, str) and attr in names:
+          raise ValueError(f'Disallowed access to "{attr}" for type {typ}.')
       try:
         val = item[attr]
       except (TypeError, IndexError, KeyError):
@@ -477,6 +585,17 @@ class _Puter:
       for elt in stmt.elts:
         value.append(self._eval_statement(elt, ctx=ctx))
       return tuple(value) if isinstance(stmt, ast.Tuple) else value
+
+    if isinstance(stmt, ast.Dict):
+      the_dict = {}
+      if stmt.keys:
+        if len(stmt.keys) != len(stmt.values):
+          raise ValueError('Expected same number of keys as values for dict.')
+        for i, k in enumerate(stmt.keys):
+          item_key = self._eval_statement(k, ctx=ctx)
+          item_value = self._eval_statement(stmt.values[i], ctx=ctx)
+          the_dict[item_key] = item_value
+      return the_dict
 
     # f-strings: https://www.basicexamples.com/example/python/ast-JoinedStr
     # Note, this will str() all evaluated items in the fstrings, and doesn't handle f-string
@@ -515,8 +634,31 @@ class _Puter:
           for i, elt in enumerate(stmt.target.elts):
             ctx[elt.id] = item[i]
         bodies = stmt.body if isinstance(stmt.body, list) else [stmt.body]
+        breaked = False
         for body in bodies:
-          value = self._eval_statement(body, ctx=ctx)
+          # Catch any breaks or continues and handle inside the loop normally.
+          try:
+            value = self._eval_statement(body, ctx=ctx)
+          except (LoopBreak, LoopContinue) as e:
+            breaked = isinstance(e, LoopBreak)
+            break
+        if breaked:
+          break
+      return None
+
+    if isinstance(stmt, ast.While):
+      while self._eval_statement(stmt.test, ctx=ctx):
+        bodies = stmt.body if isinstance(stmt.body, list) else [stmt.body]
+        breaked = False
+        for body in bodies:
+          # Catch any breaks or continues and handle inside the loop normally.
+          try:
+            value = self._eval_statement(body, ctx=ctx)
+          except (LoopBreak, LoopContinue) as e:
+            breaked = isinstance(e, LoopBreak)
+            break
+        if breaked:
+          break
       return None
 
     if isinstance(stmt, ast.ListComp):
@@ -630,6 +772,10 @@ class _Puter:
         return 1 if l <= r else 0
       if isinstance(stmt.ops[0], ast.In):
         return 1 if l in r else 0
+      if isinstance(stmt.ops[0], ast.Is):
+        return 1 if l is r else 0
+      if isinstance(stmt.ops[0], ast.IsNot):
+        return 1 if l is not r else 0
       raise NotImplementedError("Operator " + stmt.ops[0].__class__.__name__ + " not supported.")
 
     if isinstance(stmt, (ast.If, ast.IfExp)):
@@ -687,5 +833,16 @@ class _Puter:
       # if condition's body.
       ctx['__returned__'] = value
       return value
+
+    # Raise an error for break or continue, which should be caught and handled inside of loops,
+    # otherwise the error will be raised (which is desired when used outside of a loop).
+    if isinstance(stmt, ast.Break):
+      raise LoopBreak()
+    if isinstance(stmt, ast.Continue):
+      raise LoopContinue()
+
+    # Literally nothing.
+    if isinstance(stmt, ast.Pass):
+      return None
 
     raise TypeError(stmt)

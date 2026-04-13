@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { rgthree } from "./rgthree.js";
-import { getOutputNodes } from "./utils.js";
+import { getGroupNodes, getOutputNodes } from "./utils.js";
 import { SERVICE as CONFIG_SERVICE } from "./services/config_service.js";
 function showQueueNodesMenuIfOutputNodesAreSelected(existingOptions) {
     if (CONFIG_SERVICE.getConfigValue("features.menu_queue_selected_nodes") === false) {
@@ -11,7 +11,7 @@ function showQueueNodesMenuIfOutputNodesAreSelected(existingOptions) {
         content: `Queue Selected Output Nodes (rgthree) &nbsp;`,
         className: "rgthree-contextmenu-item",
         callback: () => {
-            rgthree.queueOutputNodes(outputNodes.map((n) => n.id));
+            rgthree.queueOutputNodes(outputNodes);
         },
         disabled: !outputNodes.length,
     };
@@ -25,13 +25,13 @@ function showQueueGroupNodesMenuIfGroupIsSelected(existingOptions) {
         return;
     }
     const group = rgthree.lastCanvasMouseEvent &&
-        app.graph.getGroupOnPos(rgthree.lastCanvasMouseEvent.canvasX, rgthree.lastCanvasMouseEvent.canvasY);
-    const outputNodes = group && getOutputNodes(group._nodes);
+        (app.canvas.getCurrentGraph() || app.graph).getGroupOnPos(rgthree.lastCanvasMouseEvent.canvasX, rgthree.lastCanvasMouseEvent.canvasY);
+    const outputNodes = (group && getOutputNodes(getGroupNodes(group))) || null;
     const menuItem = {
         content: `Queue Group Output Nodes (rgthree) &nbsp;`,
         className: "rgthree-contextmenu-item",
         callback: () => {
-            outputNodes && rgthree.queueOutputNodes(outputNodes.map((n) => n.id));
+            outputNodes && rgthree.queueOutputNodes(outputNodes);
         },
         disabled: !(outputNodes === null || outputNodes === void 0 ? void 0 : outputNodes.length),
     };

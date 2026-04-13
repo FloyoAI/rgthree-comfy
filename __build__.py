@@ -122,12 +122,17 @@ def build(without_tests = True, fix = False):
     if rel_path.startswith('comfyui'):
       filedata = re.sub(r'(from\s+["\'])rgthree/', f'\\1{"../" * (num + 1)}rgthree/', filedata)
       filedata = re.sub(r'(from\s+["\'])scripts/', f'\\1{"../" * (num + 1)}scripts/', filedata)
+      # Dynamic Imports
+      filedata = re.sub(r'(import\(["\'])rgthree/', f'\\1{"../" * (num + 1)}rgthree/', filedata)
     else:
       filedata = re.sub(r'(from\s+["\'])rgthree/', f'\\1{"../" * num}', filedata)
       filedata = re.sub(r'(from\s+["\'])scripts/', f'\\1{"../" * (num + 1)}scripts/', filedata)
+      # Dynamic Imports
+      filedata = re.sub(r'(import\(["\'])rgthree/', f'\\1{"../" * num}', filedata)
+
     filedata, n = re.subn(r'(\s*from [\'"](?!.*[.]js[\'"]).*?)([\'"];)', '\\1.js\\2', filedata)
     if n > 0:
-      filename = os.path.basename(file)
+      filename = file.split('rgthree-comfy')[1]
       log_step_info(
         f'{filename} has {n} import{"s" if n > 1 else ""} that do not end in ".js"', 'warn')
     with open(file, 'w', encoding="utf-8") as f:

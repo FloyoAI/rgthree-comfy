@@ -33,6 +33,12 @@ export function debounce(fn, ms = 64) {
     }
     return DEBOUNCE_FN_TO_PROMISE.get(fn);
 }
+export function check(value, msg = "", ...args) {
+    if (!value) {
+        console.error(msg, ...(args || []));
+        throw new Error(msg || "Error");
+    }
+}
 export function wait(ms = 16) {
     if (ms === 16) {
         return new Promise((resolve) => {
@@ -46,6 +52,16 @@ export function wait(ms = 16) {
             resolve();
         }, ms);
     });
+}
+export function deepFreeze(obj) {
+    const propNames = Reflect.ownKeys(obj);
+    for (const name of propNames) {
+        const value = obj[name];
+        if ((value && typeof value === "object") || typeof value === "function") {
+            deepFreeze(value);
+        }
+    }
+    return Object.freeze(obj);
 }
 function dec2hex(dec) {
     return dec.toString(16).padStart(2, "0");
@@ -152,7 +168,7 @@ export function areDataViewsEqual(a, b) {
     return true;
 }
 function looksLikeBase64(source) {
-    return source.length > 500 || source.startsWith("data:");
+    return source.length > 500 || source.startsWith("data:") || source.includes(";base64,");
 }
 export function areArrayBuffersEqual(a, b) {
     if (a == b || !a || !b) {
@@ -160,13 +176,32 @@ export function areArrayBuffersEqual(a, b) {
     }
     return areDataViewsEqual(new DataView(a), new DataView(b));
 }
-export function getCanvasImageData(image) {
+export function newCanvas(widthOrPtOrImage, height) {
+    let width;
+    if (typeof widthOrPtOrImage !== "number") {
+        width = widthOrPtOrImage.width;
+        height = widthOrPtOrImage.height;
+    }
+    else {
+        width = widthOrPtOrImage;
+        height = height;
+    }
+    if (height == null) {
+        throw new Error("Invalid height supplied when creating new canvas object.");
+    }
     const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    if (widthOrPtOrImage instanceof HTMLImageElement) {
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(widthOrPtOrImage, 0, 0, width, height);
+    }
+    return canvas;
+}
+export function getCanvasImageData(image) {
+    const canvas = newCanvas(image);
     const ctx = canvas.getContext("2d");
-    canvas.width = image.width;
-    canvas.height = image.height;
-    ctx.drawImage(image, 0, 0);
-    const imageData = ctx.getImageData(0, 0, image.width, image.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     return [canvas, ctx, imageData];
 }
 export async function convertToBase64(source) {
@@ -180,6 +215,9 @@ export async function convertToBase64(source) {
         return convertToBase64(await loadImage(source));
     }
     if (source instanceof HTMLImageElement) {
+        if (looksLikeBase64(source.src)) {
+            return source.src;
+        }
         const [canvas, ctx, imageData] = getCanvasImageData(source);
         return convertToBase64(canvas);
     }

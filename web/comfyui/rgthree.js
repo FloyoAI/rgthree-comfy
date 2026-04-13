@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { SERVICE as CONFIG_SERVICE } from "./services/config_service.js";
+import { SERVICE as BOOKMARKS_SERVICE } from "./services/bookmarks_services.js";
 import { SERVICE as KEY_EVENT_SERVICE } from "./services/key_events_services.js";
 import { WorkflowLinkFixer } from "../../rgthree/common/link_fixer.js";
 import { injectCss, wait } from "../../rgthree/common/shared_utils.js";
@@ -114,6 +115,9 @@ class LogSession {
     warnParts(message, ...args) {
         return this.logParts(LogLevel.WARN, message, ...args);
     }
+    errorParts(message, ...args) {
+        return this.logParts(LogLevel.ERROR, message, ...args);
+    }
     newSession(name) {
         return new LogSession(`${this.name}${name}`);
     }
@@ -126,12 +130,12 @@ class Rgthree extends EventTarget {
         this.settingsDialog = null;
         this.progressBarEl = null;
         this.queueNodeIds = null;
-        this.version = CONFIG_SERVICE.getConfigValue('version');
+        this.version = CONFIG_SERVICE.getConfigValue("version");
         this.logger = new LogSession("[rgthree]");
         this.monitorBadLinksAlerted = false;
         this.monitorLinkTimeout = null;
         this.processingQueue = false;
-        this.loadingApiJson = false;
+        this.loadingApiJson = null;
         this.replacingReroute = null;
         this.processingMouseDown = false;
         this.processingMouseUp = false;
@@ -139,6 +143,8 @@ class Rgthree extends EventTarget {
         this.lastCanvasMouseEvent = null;
         this.canvasCurrentlyCopyingToClipboard = false;
         this.canvasCurrentlyCopyingToClipboardWithMultipleNodes = false;
+        this.canvasCurrentlyPastingFromClipboard = false;
+        this.canvasCurrentlyPastingFromClipboardWithMultipleNodes = false;
         this.initialGraphToPromptSerializedWorkflowBecauseComfyUIBrokeStuff = null;
         this.isMac = !!(((_a = navigator.platform) === null || _a === void 0 ? void 0 : _a.toLocaleUpperCase().startsWith("MAC")) ||
             ((_c = (_b = navigator.userAgentData) === null || _b === void 0 ? void 0 : _b.platform) === null || _c === void 0 ? void 0 : _c.toLocaleUpperCase().startsWith("MAC")));
@@ -250,17 +256,24 @@ class Rgthree extends EventTarget {
             rgthree.lastCanvasMouseEvent = e;
         };
         const copyToClipboard = LGraphCanvas.prototype.copyToClipboard;
-        LGraphCanvas.prototype.copyToClipboard = function (nodes) {
+        LGraphCanvas.prototype.copyToClipboard = function (items) {
             rgthree.canvasCurrentlyCopyingToClipboard = true;
             rgthree.canvasCurrentlyCopyingToClipboardWithMultipleNodes =
-                Object.values(nodes || this.selected_nodes || []).length > 1;
-            copyToClipboard.apply(this, [...arguments]);
+                Object.values(items || this.selected_nodes || []).length > 1;
+            const value = copyToClipboard.apply(this, [...arguments]);
             rgthree.canvasCurrentlyCopyingToClipboard = false;
             rgthree.canvasCurrentlyCopyingToClipboardWithMultipleNodes = false;
+            return value;
+        };
+        const pasteFromClipboard = LGraphCanvas.prototype.pasteFromClipboard;
+        LGraphCanvas.prototype.pasteFromClipboard = function (...args) {
+            rgthree.canvasCurrentlyPastingFromClipboard = true;
+            pasteFromClipboard.apply(this, [...arguments]);
+            rgthree.canvasCurrentlyPastingFromClipboard = false;
         };
         const onGroupAdd = LGraphCanvas.onGroupAdd;
         LGraphCanvas.onGroupAdd = function (...args) {
-            const graph = app.graph;
+            const graph = app.canvas.getCurrentGraph();
             onGroupAdd.apply(this, [...args]);
             LGraphCanvas.onShowPropertyEditor({}, null, null, null, graph._groups[graph._groups.length - 1]);
         };
@@ -336,7 +349,7 @@ class Rgthree extends EventTarget {
         }, 1016);
     }
     getRgthreeIContextMenuValues() {
-        const [canvas, graph] = [app.canvas, app.graph];
+        const [canvas, graph] = [app.canvas, app.canvas.getCurrentGraph()];
         const selectedNodes = Object.values(canvas.selected_nodes || {});
         let rerouteNodes = [];
         if (selectedNodes.length) {
@@ -369,7 +382,7 @@ class Rgthree extends EventTarget {
                             ];
                             canvas.graph.add(node);
                             canvas.selectNode(node);
-                            app.graph.setDirtyCanvas(true, true);
+                            graph.setDirtyCanvas(true, true);
                         }
                     },
                     extra: { rgthree_doNotNest: true },
@@ -427,8 +440,9 @@ class Rgthree extends EventTarget {
             },
         ];
     }
-    async queueOutputNodes(nodeIds) {
+    async queueOutputNodes(nodes) {
         var _a;
+        const nodeIds = nodes.map((n) => n.id);
         try {
             this.queueNodeIds = nodeIds;
             await app.queuePrompt(0);
@@ -469,13 +483,13 @@ class Rgthree extends EventTarget {
             }
         };
         const loadApiJson = app.loadApiJson;
-        app.loadApiJson = async function () {
-            rgthree.loadingApiJson = true;
+        app.loadApiJson = async function (apiData, fileName) {
+            rgthree.loadingApiJson = apiData;
             try {
                 loadApiJson.apply(app, [...arguments]);
             }
             finally {
-                rgthree.loadingApiJson = false;
+                rgthree.loadingApiJson = null;
             }
         };
         const graphToPrompt = app.graphToPrompt;
@@ -487,7 +501,7 @@ class Rgthree extends EventTarget {
             return promise;
         };
         const apiQueuePrompt = api.queuePrompt;
-        api.queuePrompt = async function (index, prompt) {
+        api.queuePrompt = async function (index, prompt, ...args) {
             var _a;
             if (((_a = rgthree.queueNodeIds) === null || _a === void 0 ? void 0 : _a.length) && prompt.output) {
                 const oldOutput = prompt.output;
@@ -501,7 +515,7 @@ class Rgthree extends EventTarget {
                 workflow: prompt.workflow,
                 output: prompt.output,
             });
-            const response = apiQueuePrompt.apply(app, [index, prompt]);
+            const response = apiQueuePrompt.apply(app, [index, prompt, ...args]);
             rgthree.dispatchCustomEvent("comfy-api-queue-prompt-end");
             return response;
         };
@@ -700,18 +714,15 @@ class Rgthree extends EventTarget {
     }
 }
 function getBookmarks() {
-    const graph = app.graph;
-    const bookmarks = graph._nodes
-        .filter((n) => n.type === NodeTypesString.BOOKMARK)
-        .sort((a, b) => a.title.localeCompare(b.title))
-        .map((n) => ({
+    const bookmarks = BOOKMARKS_SERVICE.getCurrentBookmarks();
+    const bookmarkItems = bookmarks.map((n) => ({
         content: `[${n.shortcutKey}] ${n.title}`,
         className: "rgthree-contextmenu-item",
         callback: () => {
             n.canvasToBookmark();
         },
     }));
-    return !bookmarks.length
+    return !bookmarkItems.length
         ? []
         : [
             {
@@ -719,7 +730,7 @@ function getBookmarks() {
                 disabled: true,
                 className: "rgthree-contextmenu-item rgthree-contextmenu-label",
             },
-            ...bookmarks,
+            ...bookmarkItems,
         ];
 }
 export const rgthree = new Rgthree();
@@ -729,8 +740,8 @@ app.registerExtension({
     aboutPageBadges: [
         {
             label: `rgthree-comfy v${rgthree.version}`,
-            url: 'https://github.com/rgthree/rgthree-comfy',
-            icon: 'rgthree-comfy-about-badge-logo'
-        }
+            url: "https://github.com/rgthree/rgthree-comfy",
+            icon: "rgthree-comfy-about-badge-logo",
+        },
     ],
 });
